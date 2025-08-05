@@ -1,4 +1,6 @@
+# WEEEK.py
 import os
+
 import httpx
 import asyncio
 import logging
@@ -223,12 +225,6 @@ async def create_weeek_task(title: str, description: str, files_info: str):
 
             task_id = await create_task_minimal(client, title, description, project_id, column["id"])
             task_data = await get_task_details(client, task_id)
-
-            field_id = await get_custom_field_from_task(task_data, "Файлы")
-            if not field_id:
-                field_id = await create_custom_field(client, "Файлы", "text")
-
-            await update_task_with_files_field(client, task_data, field_id, files_info)
 
             logger.info(f"Задача создана и дополнена полем 'Файлы': ID {task_id}")
             return task_id

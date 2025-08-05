@@ -1,0 +1,16 @@
+.pdf
+.docx
+.xlsx
+.jpg
+.png
+.txt
+.png
+.jpeg
+.gif
+.word
+.doc
+.docx
+.xls
+.xlsx
+.xlsm
+.zip

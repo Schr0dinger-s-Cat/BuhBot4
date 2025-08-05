@@ -1,4 +1,6 @@
 # handlers.py
+import sys
+
 from WEEEK import create_weeek_task
 from telegram import (
     Update, ReplyKeyboardMarkup, KeyboardButton,
@@ -11,7 +13,7 @@ from telegram.ext import (
 from datetime import datetime
 import os
 import json
-
+from pathconf import BASE_PATH
 from db import create_task, update_task, get_task_column, mark_task_deleted
 from loggers import log_user_friendly
 from utils import (
@@ -20,7 +22,22 @@ from utils import (
     build_task_card
 )
 
-BASE_PATH = "data"
+from pathlib import Path
+import ast  # Для безопасного чтения Python-выражений
+
+
+
+
+def load_allowed_extensions():
+    try:
+        with open("extensions.txt", "r", encoding="utf-8") as f:
+            extensions = [line.strip().lower() for line in f if line.strip()]
+            return extensions
+    except FileNotFoundError:
+        # Если файла нет - разрешаем все расширения (или можно вернуть пустой список для запрета всех)
+        return None
+
+ALLOWED_EXTENSIONS = load_allowed_extensions()
 
 def register_handlers(application):
     application.add_handler(CommandHandler("start", start))
@@ -52,6 +69,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # handlers.py
 
+# Модифицируем функцию collect_data
 async def collect_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     task_id = context.user_data.get('db_task_id')
@@ -70,27 +88,34 @@ async def collect_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_entries = context.user_data.get('files', [])
     file_texts = []
 
-    msg_text = update.message.text or ""
+    msg_text = update.message.text or update.message.caption or ""
     has_text = bool(msg_text.strip())
     has_file = False
 
     # Обработка документов
     if update.message.document:
         doc = update.message.document
-        file = await doc.get_file()
-        did = get_d_id()
-        filename = f"{task_id}_{did}{os.path.splitext(doc.file_name)[1]}"
-        folder = os.path.join(BASE_PATH, datetime.now().strftime("%Y-%m-%d"), str(task_id))
-        os.makedirs(folder, exist_ok=True)
-        path = os.path.join(folder, filename)
-        await file.download_to_drive(path)
-        rename_log += f"{doc.file_name} -> {filename}\n"
-        file_entries.append(f"{doc.file_name} -> {path}")
-        file_texts.append(doc.file_name)  # Сохраняем оригинальное имя файла
-        has_file = True
-        increase_d_id()
+        file_ext = os.path.splitext(doc.file_name)[1].lower()
 
-    # Обработка фото
+        # Проверяем расширение, если список расширений задан
+        if ALLOWED_EXTENSIONS is not None and file_ext not in ALLOWED_EXTENSIONS:
+            file_texts.append(f"{doc.file_name} [Файл не скачан из-за недопустимого расширения]")
+            log_user_friendly(f"⚠️ Файл {doc.file_name} отклонён из-за недопустимого расширения")
+        else:
+            file = await doc.get_file()
+            did = get_d_id()
+            filename = f"{task_id}_{did}{os.path.splitext(doc.file_name)[1]}"
+            folder = os.path.join(BASE_PATH, datetime.now().strftime("%Y-%m-%d"), str(task_id))
+            os.makedirs(folder, exist_ok=True)
+            path = os.path.join(folder, filename)
+            await file.download_to_drive(path)
+            rename_log += f"{doc.file_name} -> {filename}\n"
+            file_entries.append(f"{doc.file_name} -> {path}")
+            file_texts.append(doc.file_name)
+            has_file = True
+            increase_d_id()
+
+    # Обработка фото (оставляем без изменений, так как фото всегда допустимы)
     elif update.message.photo:
         photo = update.message.photo[-1]
         file = await photo.get_file()
@@ -102,21 +127,21 @@ async def collect_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await file.download_to_drive(path)
         rename_log += f"photo_{photo.file_unique_id}.jpg -> {filename}\n"
         file_entries.append(f"photo -> {path}")
-        file_texts.append("photo.jpg")  # Сохраняем общее имя для фото
+        file_texts.append("photo.jpg")
         has_file = True
         increase_d_id()
 
+    # Остальной код функции оставляем без изменений
     if has_text or has_file:
         entry = msg_text.strip()
         if file_texts:
-            entry += "\n" + "\n".join(file_texts)  # Добавляем только имена файлов
-        context.user_data['messages'].append(entry)
+            entry += "\n" + "\n".join(file_texts) if entry else "\n".join(file_texts)
+        context.user_data.setdefault('messages', []).append(entry)
 
     context.user_data['rename_log'] = rename_log
     context.user_data['files'] = file_entries
 
     log_user_friendly(f"📨 Принято сообщение от {user.full_name}. Текст: {msg_text or '[нет текста]'}")
-
 
 # handlers.py (изменяем функцию publish_task)
 
@@ -129,7 +154,7 @@ async def publish_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
     user_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-    full_text = "\n\n".join(context.user_data.get('messages', [])) or "[текст не указан]"
+    full_text = "\n".join(context.user_data.get('messages', [])) or "[текст не указан]"
     files = context.user_data.get('files', [])
     rename_log = context.user_data.get('rename_log', "Файлы не прикреплялись")
 
@@ -154,28 +179,33 @@ async def publish_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_rename_log(task_id, rename_log)
 
     # Формируем данные для карточки задачи
-    task_card = build_task_card(
+    task_card, task_title = build_task_card(
         task_id, f"<a href='tg://user?id={user_id}'>{user_name}</a>", created_at, full_text, files
     )
 
     # Формируем данные для WEEEK
-    # Формируем данные для WEEEK
-    weeek_title = full_text.split('\n')[0].strip()[:100]
+    # Формируем описание задачи с сохранением структуры
+    task_text_parts = []
+    current_text = []
 
-    # Очищаем текст задачи от путей к файлам
-    task_text_lines = []
     for line in full_text.split('\n'):
-        if not line.startswith('data\\') and line.strip():
-            task_text_lines.append(line)
-    cleaned_task_text = "\n".join(task_text_lines)
+        if line.startswith('data\\') or any(f in line for f in files):
+            if current_text:
+                task_text_parts.append("\n".join(current_text))
+                current_text = []
+            task_text_parts.append(line)
+        elif line.strip():
+            current_text.append(line)
 
-    # Описание может быть пустым, если вся информация в кастомных полях
-    weeek_description = cleaned_task_text
+    if current_text:
+        task_text_parts.append("\n".join(current_text))
+
+    weeek_description = "\n\n".join(task_text_parts)
 
     # Создаем задачу в WEEEK
     try:
         weeek_task_id = await create_weeek_task(
-            title=weeek_title,
+            title=task_title,
             description=weeek_description,
             files_info=rename_log
         )
@@ -217,3 +247,4 @@ async def cancel_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
+

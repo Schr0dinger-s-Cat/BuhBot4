@@ -1,10 +1,12 @@
 # db.py
-
+import os
 import sqlite3
 from datetime import datetime
+
+from pathconf import BASE_PATH
 from loggers import log_user_friendly
 
-DB_PATH = "tasks.db"
+DB_PATH = os.path.join(BASE_PATH, "tasks.db") if 'BASE_PATH' in globals() else "tasks.db"
 
 # db.py
 
